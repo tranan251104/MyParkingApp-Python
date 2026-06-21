@@ -1,53 +1,148 @@
 import requests
 import random
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 
 app = Flask(__name__)
 
-# Cấu hình kết nối tới Java Backend
-# Lưu ý: Java chạy ở port 8080
 JAVA_BACKEND_URL = "http://localhost:8080/api/parking"
-
-TOTAL_SLOTS = 1000
-occupied_slots = {}  # Lưu trữ tạm: { slotId: plate }
 
 
 def generate_plate():
     cities = ["30A", "29B", "51F", "43A", "88K", "77B"]
     city = random.choice(cities)
-    number = random.randint(00000, 99999)
-    return f"{city}-{number}"
+    number = random.randint(1, 99999)
+
+    # Nên bỏ dấu "-" để đồng bộ với backend Java
+    return f"{city}{number:05d}"
 
 
-# API để kích hoạt xe vào (Check-in)
-@app.route('/auto-test', methods=['GET'])
-def simulate_check_in():
-    plate = generate_plate()
-    # Sinh ngẫu nhiên một ô đỗ từ S1 đến S1000
-    slot_id = f"S{random.randint(1, TOTAL_SLOTS)}"
+def call_backend_get(endpoint, params):
+    url = f"{JAVA_BACKEND_URL}{endpoint}"
 
-    if slot_id not in occupied_slots:
-        print(f"📷 CAMERA: Phát hiện xe {plate} vào ô {slot_id}")
+    try:
+        response = requests.get(url, params=params, timeout=5)
 
-        # TỰ SINH LINK VÀ GỌI JAVA BACKEND
-        url = f"{JAVA_BACKEND_URL}/checkin?slotId={slot_id}&plate={plate}"
         try:
-            response = requests.get(url)
-            if response.status_code == 200:
-                occupied_slots[slot_id] = plate
-                return jsonify({
-                    "status": "Success",
-                    "message": f"Đã báo cho Java: Xe {plate} vào ô {slot_id}",
-                    "data": response.json()
-                })
-            else:
-                return jsonify({"status": "Error", "message": "Java Backend tra ve loi"}), 500
-        except Exception as e:
-            return jsonify({"status": "Error", "message": str(e)}), 500
+            data = response.json()
+        except Exception:
+            data = {
+                "raw": response.text
+            }
 
-    return jsonify({"status": "Warning", "message": "O do da co xe, thu lai lan sau"})
+        return response.status_code, data
+
+    except requests.exceptions.RequestException as e:
+        return 500, {
+            "success": False,
+            "message": str(e),
+            "data": None
+        }
 
 
-if __name__ == '__main__':
-    print("Camera AI Simulator đang chạy tại port 5000...")
-    app.run(host='0.0.0.0', port=5000)
+@app.route("/", methods=["GET"])
+def home():
+    return jsonify({
+        "message": "Camera AI Simulator is running",
+        "endpoints": {
+            "checkin_random": "/auto-checkin",
+            "checkin_plate": "/auto-checkin?plate=30A12345",
+            "checkout_plate": "/auto-checkout?plate=30A12345",
+            "auto_test": "/auto-test?plate=30A12345"
+        }
+    })
+
+
+# =========================
+# CAMERA CỔNG VÀO - CHECK-IN
+# =========================
+@app.route("/auto-checkin", methods=["GET"])
+def auto_checkin():
+    plate = request.args.get("plate")
+
+    if not plate:
+        plate = generate_plate()
+
+    plate = plate.strip().upper().replace(" ", "")
+
+    print(f"📷 CAMERA CỔNG VÀO: Phát hiện xe {plate}")
+
+    status_code, data = call_backend_get(
+        "/checkin",
+        {
+            "plate": plate
+        }
+    )
+
+    if status_code == 200:
+        return jsonify({
+            "status": "Success" if data.get("success") else "Failed",
+            "action": "CHECK_IN",
+            "plate": plate,
+            "assigned_slot": data.get("data", {}).get("slotId"),
+            "backend_response": data
+        }), 200
+
+    return jsonify({
+        "status": "Error",
+        "action": "CHECK_IN",
+        "plate": plate,
+        "message": "Backend lỗi",
+        "backend_response": data
+    }), 500
+
+
+# =========================
+# CAMERA CỔNG RA - CHECK-OUT
+# =========================
+@app.route("/auto-checkout", methods=["GET"])
+def auto_checkout():
+    plate = request.args.get("plate")
+
+    if not plate:
+        return jsonify({
+            "status": "Error",
+            "message": "Thiếu biển số. Ví dụ: /auto-checkout?plate=30A12345"
+        }), 400
+
+    plate = plate.strip().upper().replace(" ", "")
+
+    print(f"📷 CAMERA CỔNG RA: Phát hiện xe {plate}")
+
+    status_code, data = call_backend_get(
+        "/checkout/by-plate",
+        {
+            "plate": plate
+        }
+    )
+
+    if status_code == 200:
+        return jsonify({
+            "status": "Success" if data.get("success") else "Failed",
+            "action": "CHECK_OUT",
+            "plate": plate,
+            "slotId": data.get("data", {}).get("slotId"),
+            "minutes": data.get("data", {}).get("minutes"),
+            "amount": data.get("data", {}).get("amount"),
+            "backend_response": data
+        }), 200
+
+    return jsonify({
+        "status": "Error",
+        "action": "CHECK_OUT",
+        "plate": plate,
+        "message": "Backend lỗi",
+        "backend_response": data
+    }), 500
+
+
+# =========================
+# GIỮ LẠI ENDPOINT CŨ CỦA BẠN
+# =========================
+@app.route("/auto-test", methods=["GET"])
+def auto_test():
+    return auto_checkin()
+
+
+if __name__ == "__main__":
+    print("📷 Camera AI Simulator chạy tại port 5000...")
+    app.run(host="0.0.0.0", port=5000, debug=True)
