@@ -12,7 +12,6 @@ def generate_plate():
     city = random.choice(cities)
     number = random.randint(1, 99999)
 
-    # Nên bỏ dấu "-" để đồng bộ với backend Java
     return f"{city}{number:05d}"
 
 
@@ -26,8 +25,31 @@ def call_backend_get(endpoint, params):
             data = response.json()
         except Exception:
             data = {
-                "raw": response.text
+                "success": False,
+                "message": "Backend không trả về JSON",
+                "raw": response.text,
+                "data": None
             }
+
+        # Chống trường hợp backend trả null
+        if data is None:
+            data = {
+                "success": False,
+                "message": "Backend trả về null",
+                "data": None
+            }
+
+        # Chống trường hợp backend trả list/string thay vì object
+        if not isinstance(data, dict):
+            data = {
+                "success": False,
+                "message": "Backend trả về dữ liệu không đúng dạng object",
+                "raw": data,
+                "data": None
+            }
+
+        print("JAVA STATUS:", response.status_code)
+        print("JAVA RESPONSE:", data)
 
         return response.status_code, data
 
@@ -73,12 +95,14 @@ def auto_checkin():
         }
     )
 
+    backend_data = data.get("data") or {}
+
     if status_code == 200:
         return jsonify({
             "status": "Success" if data.get("success") else "Failed",
             "action": "CHECK_IN",
             "plate": plate,
-            "assigned_slot": data.get("data", {}).get("slotId"),
+            "assigned_slot": backend_data.get("slotId"),
             "backend_response": data
         }), 200
 
@@ -115,14 +139,16 @@ def auto_checkout():
         }
     )
 
+    backend_data = data.get("data") or {}
+
     if status_code == 200:
         return jsonify({
             "status": "Success" if data.get("success") else "Failed",
             "action": "CHECK_OUT",
             "plate": plate,
-            "slotId": data.get("data", {}).get("slotId"),
-            "minutes": data.get("data", {}).get("minutes"),
-            "amount": data.get("data", {}).get("amount"),
+            "slotId": backend_data.get("slotId"),
+            "minutes": backend_data.get("minutes"),
+            "amount": backend_data.get("amount"),
             "backend_response": data
         }), 200
 
@@ -136,7 +162,7 @@ def auto_checkout():
 
 
 # =========================
-# GIỮ LẠI ENDPOINT CŨ CỦA BẠN
+# GIỮ LẠI ENDPOINT CŨ
 # =========================
 @app.route("/auto-test", methods=["GET"])
 def auto_test():
